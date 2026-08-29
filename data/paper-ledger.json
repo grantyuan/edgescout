@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "id": "mtct3x26-gjsdmc",
+      "symbol": "BTC-0-28AUG26-1100/tUSDC",
+      "asset": "BTC",
+      "side": "YES",
+      "stakePct": 0.2,
+      "stake": 2000,
+      "shares": 7547.169811,
+      "entryPrice": 0.265,
+      "openAt": 1787912783646,
+      "expiresAtMs": 1787914800000,
+      "refPrice": 79182.715,
+      "refKind": "open",
+      "status": "settled",
+      "closeAt": 1787914806394,
+      "win": true,
+      "pnl": 5547.169811
+    }
+  ]
+}
