@@ -1,0 +1,7 @@
+# Foundry build output
+out/
+cache/
+broadcast/
+
+# forge-std is a plain vendored checkout; keep it out of the app repo's history.
+lib/

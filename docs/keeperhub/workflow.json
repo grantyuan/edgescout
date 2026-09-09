@@ -1,0 +1,71 @@
+{
+  "_comment": "Illustrative KeeperHub workflow for the EdgeScout Agent Economy entry. Mirrors what EdgeScout's POST /api/keeperhub does via the KeeperHub MCP execute_transfer tool: a deterministic signal triggers a capped, idempotency-keyed testnet USDC transfer on Base Sepolia. Argument names follow KeeperHub's documented MCP schema (chain_id as numeric string, human-readable amount, idempotency_key). Replace the placeholder values with real ones before importing into the KeeperHub builder.",
+  "name": "EdgeScout deterministic signal -> testnet USDC transfer",
+  "description": "EdgeScout's 1/4-Kelly model sizes an event-contract position; this workflow executes the mirror transfer on Base Sepolia and records the transaction link.",
+  "version": 1,
+  "trigger": {
+    "type": "webhook",
+    "description": "POST /api/keeperhub from the EdgeScout dashboard (or any caller) with the sized stake."
+  },
+  "inputs": {
+    "amount": {
+      "type": "string",
+      "max": "25.00",
+      "description": "Stake in USDC as a human-readable two-decimal string, capped by KEEPERHUB_MAX_STAKE_USD"
+    },
+    "recipient": {
+      "type": "string",
+      "description": "0x40-hex destination address (the org's own wallet in this demo)"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "description": "Derived from the EdgeScout ledger entry id and mode (edgescout-<entryId>-<mode>); prevents double-spend on retry"
+    },
+    "simulate": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "steps": [
+    {
+      "id": "preflight",
+      "tool": "execute_transfer",
+      "description": "Simulation preflight; must report success and no revert before anything broadcasts.",
+      "args": {
+        "chain_id": "84532",
+        "to_address": "{{inputs.recipient}}",
+        "token_address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "amount": "{{inputs.amount}}",
+        "idempotency_key": "{{inputs.idempotencyKey}}",
+        "simulate": true
+      }
+    },
+    {
+      "id": "execute",
+      "tool": "execute_transfer",
+      "description": "Broadcast the transfer; the org wallet pays, KeeperHub signs.",
+      "args": {
+        "chain_id": "84532",
+        "to_address": "{{inputs.recipient}}",
+        "token_address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "amount": "{{inputs.amount}}",
+        "idempotency_key": "{{inputs.idempotencyKey}}",
+        "simulate": false
+      },
+      "outputs": {
+        "txHash": "$result.transactionHash",
+        "txLink": "$result.transactionLink"
+      }
+    },
+    {
+      "id": "writeback",
+      "type": "note",
+      "description": "EdgeScout persists the execution into its paper ledger (entry.keeperhub) so the dashboard and every later audit show the tx link next to the position.",
+      "data": {
+        "executionId": "{{steps.execute.outputs.txHash}}",
+        "txLink": "{{steps.execute.outputs.txLink}}",
+        "status": "success"
+      }
+    }
+  ]
+}

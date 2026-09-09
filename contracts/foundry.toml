@@ -1,0 +1,57 @@
+# EdgeScout ASC (Attestcoin Smart Contract) — Foundry project.
+#
+# The Solidity dependency @gluwa/usc-contracts is installed through npm at the
+# repository root (node_modules/), not through forge/git submodules, because the
+# Next.js app already depends on the matching @gluwa/usc-sdk. The remapping
+# below therefore reaches one level up into the repo's node_modules, and
+# `allow_paths` grants solc permission to read that directory.
+#
+# forge-std lives in lib/ as a plain checkout (no git submodule) so a fresh
+# clone can run `forge test` without extra setup.
+
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+script = "script"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+# EvmV1Decoder decodes deeply nested tuples; via-IR keeps the decode path free of
+# "stack too deep" and produces tighter storage-packing code for StoredFact.
+via_ir = true
+allow_paths = ["../node_modules"]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@gluwa/usc-contracts/=../node_modules/@gluwa/usc-contracts/",
+]
+
+[lint]
+# Every narrowing cast in EdgeScoutSignalStore is preceded by an explicit
+# `ValueOutOfRange` range check (or is provably safe: `uint48(block.timestamp)`,
+# `uint32(logs.length)`), so `unsafe-typecast` has no true positives here and its
+# 11 hits would drown the genuinely useful lints. `asm-keccak256` asks for inline
+# assembly in `computeQueryId`; readable `abi.encode` is worth ~30 gas on a
+# function that must stay byte-identical to its TypeScript twin in src/lib/asc.ts.
+# The reentrancy findings were real and are FIXED IN CODE (the replay guard is now
+# written before the precompile call, and `attestTx` is `nonReentrant`). What the
+# linter still reports is the guard pattern itself — "`_reentrancyStatus` is updated
+# after the external call" is the definition of a reentrancy guard, and the event
+# must follow the call because it carries data decoded from the verified transaction.
+# `unwrapped-modifier-logic` is a code-size hint for a 3-line modifier.
+# Tests are excluded from linting: every finding there is a false positive
+# (`for (uint256 i; ...)` relies on default initialization — the same style the
+# official EvmV1Decoder uses — and `calls-loop` flags in-memory array allocation).
+ignore = ["test/*"]
+exclude_lints = [
+    "unsafe-typecast",
+    "asm-keccak256",
+    "reentrancy-no-eth",
+    "reentrancy-events",
+    "unwrapped-modifier-logic",
+]
+
+[fmt]
+line_length = 100
+tab_width = 4
