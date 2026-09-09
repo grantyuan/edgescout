@@ -31,7 +31,8 @@ tradeable edge.
 - **Live market wall** — all active BTC/ETH Up/Down and Strike markets on the
   Somnia testnet via the official `@somnia-chain/markets-sdk`: bid/ask,
   implied probability, model fair value, edge, risk score, suggested action.
-  Auto-refreshes every 15s; no venue hard-coding (testnet venue ids drift).
+  Auto-refreshes every 15s; no venue filtering (testnet venue activity
+  churns — which venue is rolling changes; venue ids themselves are stable).
 - **Click → full analyst report in seconds** — deterministic model
   `P(S_T ≥ K) = Φ(ln(S/ref)/(σ√τ))` under zero-drift Brownian motion, with
   volatility measured from 60 one-minute candles; Up/Down markets settle vs

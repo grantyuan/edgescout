@@ -8,23 +8,28 @@ testnet and are reproducible.
 
 ---
 
-## 1. Venue ids drift over time — do not filter by venue
+## 1. Venue activity is undocumented — document the standard venue and how to tell which one is rolling
 
-**Observation.** The `venue` field on markets returned by `loadMarkets()`
-is not stable across days: the same logical market can appear under a
-different venue id after the testnet venue registry is rebuilt. Code that
-filters `loadMarkets(true)` by a venue id captured earlier (or by a
-hard-coded constant) silently returns an empty board.
+**Observation (corrected per Somnia team review).** Venue ids do *not*
+drift: they are derived from an operator index and are stable. What
+changes over time is *which venue is actively rolling markets*. EdgeScout's
+original draft claimed id drift; the empty boards we saw were
+active-venue churn, not id mutation. The standard DreamDEX testnet venue
+is `0x679795a0195a1b76cdebb7c51d74e058aee92919b8c3389af86ef24535e8a28c`,
+and pinning it (EdgeScout's `TESTNET_VENUE_ID` default) is the right call
+rather than avoiding the venue filter.
 
-**Impact.** Any "watch a specific venue" feature becomes flaky; a board
-built on venue-filtered lists goes empty at random times.
+**Impact.** An integrator who discovers venue ids by sampling
+`loadMarkets()` cannot distinguish "wrong venue id" from "that venue is
+not rolling markets right now" — both present as an empty board, and
+neither behavior is documented.
 
 **Suggestion.**
-- Document that venue ids are mutable and must not be used as stable keys
-  (or expose a stable venue name alongside the id).
-- Document the recommended pattern: `loadMarkets(true)` (all venues) +
-  row-level `active`/`expiry` filtering. EdgeScout implements exactly this
-  and is immune to drift.
+- Document the standard DreamDEX testnet venue id (and that venue ids are
+  stable, derived from the operator index) so integrators can pin it.
+- Document how to tell which venue is actively rolling markets (e.g. an
+  `active` flag on the venue listing), so an empty venue-filtered result
+  is diagnosable instead of looking like id drift.
 
 ## 2. `strike` is a raw integer — ×100 gives the human price
 
