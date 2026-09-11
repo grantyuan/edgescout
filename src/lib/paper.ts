@@ -350,3 +350,127 @@ export async function attachKeeperhubExecution(
     return entry;
   });
 }
+
+// ---------------------------------------------------------------------------
+// CSV export (deterministic serializer for GET /api/paper/export)
+//
+// The persisted ledger (settled + open entries) is serialized to RFC 4180 CSV:
+// fixed column order, LF line endings, rows sorted by openAt asc then id asc
+// (stable across file edits), null/undefined → empty string, numbers as-is,
+// booleans as true/false, timestamps emitted both as unix-ms and UTC ISO-8601,
+// and string fields quoted only when they contain , " CR or LF (embedded
+// quotes doubled). The export is a snapshot: settlement runs on /api/paper
+// reads, never on export.
+// ---------------------------------------------------------------------------
+
+/** Stable CSV column order for the paper-ledger export (part of the API). */
+export const PAPER_CSV_COLUMNS = [
+  "id",
+  "symbol",
+  "asset",
+  "side",
+  "status",
+  "stake_pct",
+  "stake",
+  "shares",
+  "entry_price",
+  "open_at_ms",
+  "open_at_iso",
+  "expires_at_ms",
+  "close_at_ms",
+  "close_at_iso",
+  "win",
+  "pnl",
+  "ref_price",
+  "ref_kind",
+  "keeperhub_status",
+  "keeperhub_tx_hash",
+  "keeperhub_tx_link",
+] as const;
+
+/** Serialize one value: null/undefined → "", numbers as-is, booleans as words. */
+function csvField(
+  value: string | number | boolean | null | undefined,
+): string {
+  if (value == null) return "";
+  let s: string;
+  if (typeof value === "number") {
+    s = Number.isFinite(value) ? String(value) : "";
+  } else if (typeof value === "boolean") {
+    s = value ? "true" : "false";
+  } else {
+    s = value;
+  }
+  // RFC 4180: quote when the field contains a comma, quote, CR or LF;
+  // double any embedded quotes.
+  if (/[",\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/** Unix ms → UTC ISO-8601 (null/undefined → empty cell), deterministic. */
+function isoMs(ms: number | null | undefined): string | null {
+  return typeof ms === "number" && Number.isFinite(ms)
+    ? new Date(ms).toISOString()
+    : null;
+}
+
+/**
+ * Serialize ledger entries to CSV (deterministic). Defensive against
+ * malformed rows (entries without a non-empty string id are dropped) so a
+ * corrupted ledger file can never throw out of the serializer.
+ */
+export function entriesToCsv(entries: LedgerEntry[]): string {
+  const rows: string[][] = [Array.from(PAPER_CSV_COLUMNS)];
+  const safe = Array.isArray(entries) ? entries : [];
+  const sorted = safe
+    .filter(
+      (e): e is LedgerEntry =>
+        !!e && typeof e === "object" &&
+        typeof (e as LedgerEntry).id === "string" &&
+        ((e as LedgerEntry).id ?? "").length > 0,
+    )
+    .slice()
+    .sort((a, b) => {
+      const ka =
+        typeof a.openAt === "number" && Number.isFinite(a.openAt)
+          ? a.openAt
+          : 0;
+      const kb =
+        typeof b.openAt === "number" && Number.isFinite(b.openAt)
+          ? b.openAt
+          : 0;
+      if (ka !== kb) return ka - kb;
+      const ia = String(a.id ?? "");
+      const ib = String(b.id ?? "");
+      return ia < ib ? -1 : ia > ib ? 1 : 0;
+    });
+  for (const e of sorted) {
+    const kh = e.keeperhub ?? null;
+    rows.push(
+      [
+        e.id,
+        e.symbol,
+        e.asset,
+        e.side,
+        e.status,
+        e.stakePct,
+        e.stake,
+        e.shares,
+        e.entryPrice,
+        e.openAt,
+        isoMs(e.openAt),
+        e.expiresAtMs,
+        e.closeAt,
+        isoMs(e.closeAt),
+        e.win,
+        e.pnl,
+        e.refPrice,
+        e.refKind,
+        kh ? kh.status : null,
+        kh ? kh.txHash : null,
+        kh ? kh.txLink : null,
+      ].map((v) => csvField(v)),
+    );
+  }
+  return rows.map((r) => r.join(",")).join("\n") + "\n";
+}

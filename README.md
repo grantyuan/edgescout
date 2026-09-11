@@ -43,7 +43,7 @@ tradeable edge.
   the window open price (fetched at the exact `tradingStart` candle, EMA
   fallback).
 - **The LLM never produces a number.** Every price, probability, edge, and
-  position size is pre-computed by deterministic, unit-tested code (107
+  position size is pre-computed by deterministic, unit-tested code (122
   passing tests); the LLM only narrates, with an automatic deterministic
   mock fallback so the demo never breaks on stage. Confidence and position
   sizing are always re-derived from the deterministic inputs.
@@ -51,6 +51,13 @@ tradeable edge.
   automatic settlement at expiry by spot-vs-reference (the testnet indexer
   never settles on-chain), persisted ledger with win-rate and P&L. No
   on-chain orders, no wallet needed.
+- **Paper ledger CSV export** — `GET /api/paper/export` downloads the
+  persisted ledger (settled + open entries) as RFC 4180 CSV with a stable
+  21-column header, LF line endings, deterministic row order (openAt asc,
+  id asc), UTC ms + ISO-8601 timestamps, and nulls as empty cells; KeeperHub
+  execution columns included. Offline snapshot of
+  `data/paper-ledger.json` (settlement runs on `/api/paper` reads, not on
+  export); the deterministic serializer is unit-tested.
 - **Model scorecard** — re-evaluates the exact deterministic model one minute
   before expiry over the 100 most recently settled testnet markets (bounded
   concurrency, 60s server cache) and reports hit-rate + Brier score against
@@ -115,9 +122,9 @@ refresh: edge rate, top-5 largest edges, and the most recent samples
    (validated against the indexer first).
 5. **`/api/chart?symbol=`** — the last 90 1m candles + settlement reference
    (the detail-view data plane).
-6. **`/api/paper` / `/api/paper/open`** — read the paper account / open a
-   simulated position (POST `{symbol}`, filled at 1/4 Kelly at the current
-   suggestion).
+6. **`/api/paper` / `/api/paper/open` / `/api/paper/export`** — read the paper
+   account / open a simulated position (POST `{symbol}`, filled at 1/4 Kelly
+   at the current suggestion) / download the persisted ledger as CSV.
 
 ## Tech stack
 
@@ -133,7 +140,7 @@ refresh: edge rate, top-5 largest edges, and the most recent samples
 ```bash
 npm install
 cp .env.example .env   # optional: LLM_API_KEY + CC3 testnet attest vars (all have live defaults)
-npm test               # 92 deterministic tests, zero framework
+npm test               # 122 deterministic tests, zero framework
 npm run build && npm start
 # → http://localhost:3000
 ```
@@ -155,13 +162,15 @@ src/lib/signals.ts  # signal/edge observation log (60s/market sampling, 2000-row
 src/lib/attest.ts   # Attestcoin Protocol read-only attestation (prover API + 0x0FD2 eth_call)
 src/components/     # CandleChart (SVG K-line + settlement reference line) + AttestPanel + KeeperPanel + SignalHistoryPanel
 src/app/            # Next.js dashboard + /api/markets /api/analyze /api/chart
-                    #             + /api/health /api/paper /api/paper/open /api/scorecard /api/signals /api/attest /api/asc
+                    #             + /api/health /api/paper /api/paper/open /api/paper/export
+                    #             + /api/scorecard /api/signals /api/attest /api/asc
 contracts/        # EdgeScoutSignalStore ASC (Foundry, 29 tests); deploy scripts in scripts/
+research/           # event & data-plane research
 ```
 
 ## Deterministic unit tests
 
-`npm test` runs 112 cases (Node built-in `node:test`, zero framework):
+`npm test` runs 122 cases (Node built-in `node:test`, zero framework):
 17 model cases (CDF, reference priority, expiry settlement semantics, Kelly
 formula & 20% cap) + 14 paper-ledger settlement cases (binary payout,
 dual-side mirroring, expiry gate, stale entries, spot cache, no-op does not
@@ -172,7 +181,10 @@ precompile caching) + 10 ASC reader cases (all offline, injected transports)
 + 20 KeeperHub execution-layer cases (fully offline fake transport: config, sizing,
 MCP/REST paths, 409 replay guard, ledger write-back)
 + 20 signal-history cases (sampling gate, ring-buffer cap, lastAtMs persistence/pruning,
-malformed- and wrong-version-file recovery, pure summary aggregation incl. top-5 largest-edge selection).
+malformed- and wrong-version-file recovery, pure summary aggregation incl. top-5 largest-edge selection)
++ 10 paper-ledger CSV-export cases (stable 21-column header, empty ledger, null → empty
+cells, RFC 4180 quoting round-trip for comma/quote/LF/CR, deterministic row order,
+UTC ms+ISO timestamps, malformed-row defense).
 
 ## Attestcoin Protocol integration
 
@@ -252,11 +264,14 @@ server-side idempotency key prevents double-spend on retry.
 - `node scripts/check-wallet-funding.mjs` — read-only funding pre-check:
   resolves the org wallet from the live API and queries Base Sepolia RPC for
   native ETH and USDC balances (exits non-zero when under 5 testnet USDC).
+- `bash scripts/keeperhub-dayof.sh` — one-shot day-of pipeline: funding
+  pre-check, real smoke run (simulate → execute → replay guard → ledger
+  write-back), then prints the evidence file with the transaction link.
 - `node scripts/keeperhub-smoke.mjs` — the smoke steps on their own; writes
   `.attestcoin/keeperhub-evidence.json`.
 - An offline KeeperHub test double is included (`node scripts/mock-keeperhub.mjs`,
   port 9999), so the whole pipeline can be exercised without a funded org
-  wallet.
+  wallet; see docs/keeperhub-real-smoke-runbook.md.
 
 ## Known limitations
 
@@ -273,6 +288,10 @@ server-side idempotency key prevents double-spend on retry.
 - The signal log (`data/signal-history.json`) is a local ring buffer (2000
   rows, one sample per market per minute); on a read-only filesystem it
   degrades to in-memory, same as the paper ledger.
+- `GET /api/paper/export` is a snapshot of the *persisted* ledger: it never
+  settles or re-marks positions (that happens on `/api/paper` reads), so an
+  open position near expiry may appear `open` in the CSV until the next
+  account read settles it.
 - `POST /api/keeperhub` is unauthenticated (testnet demo only): the amount
   is capped by `KEEPERHUB_MAX_STAKE_USD`, re-executing an executed position
   is rejected with 409, and destination addresses are validated — but do
