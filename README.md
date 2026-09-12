@@ -43,7 +43,7 @@ tradeable edge.
   the window open price (fetched at the exact `tradingStart` candle, EMA
   fallback).
 - **The LLM never produces a number.** Every price, probability, edge, and
-  position size is pre-computed by deterministic, unit-tested code (122
+  position size is pre-computed by deterministic, unit-tested code (130
   passing tests); the LLM only narrates, with an automatic deterministic
   mock fallback so the demo never breaks on stage. Confidence and position
   sizing are always re-derived from the deterministic inputs.
@@ -62,7 +62,10 @@ tradeable edge.
   before expiry over the 100 most recently settled testnet markets (bounded
   concurrency, 60s server cache) and reports hit-rate + Brier score against
   the real on-chain outcomes: the model's predictive power, *measured, not
-  claimed*.
+  claimed*. Per-asset breakdown (hit-rate / Brier for BTC vs ETH) and five
+  fixed `pModel` calibration buckets (0.00–0.20 … 0.80–1.00: mean P vs
+  empirical YES rate) are computed by the same unit-tested core and rendered
+  under the scorecard.
 - **Signal history** — every board refresh is sampled (≤1 sample per market
    per minute, 2000-row ring buffer in `data/signal-history.json`) and
    `GET /api/signals` reports how often a tradeable edge (|edge| ≥ 3pp)
@@ -140,7 +143,7 @@ refresh: edge rate, top-5 largest edges, and the most recent samples
 ```bash
 npm install
 cp .env.example .env   # optional: LLM_API_KEY + CC3 testnet attest vars (all have live defaults)
-npm test               # 122 deterministic tests, zero framework
+npm test               # 130 deterministic tests, zero framework
 npm run build && npm start
 # → http://localhost:3000
 ```
@@ -170,12 +173,14 @@ research/           # event & data-plane research
 
 ## Deterministic unit tests
 
-`npm test` runs 122 cases (Node built-in `node:test`, zero framework):
+`npm test` runs 130 cases (Node built-in `node:test`, zero framework):
 17 model cases (CDF, reference priority, expiry settlement semantics, Kelly
 formula & 20% cap) + 14 paper-ledger settlement cases (binary payout,
 dual-side mirroring, expiry gate, stale entries, spot cache, no-op does not
-write; hermetic temp cwd, zero network) + 9 scorecard cases (hit-rate / Brier
-aggregation, 0.5 boundary direction, ×100 strike-conversion self-healing)
+write; hermetic temp cwd, zero network) + 17 scorecard cases (hit-rate / Brier
+aggregation, 0.5 boundary direction, ×100 strike-conversion self-healing,
+per-asset split fixed-order + unknown-asset filtering, 5-bucket calibration
+boundaries / means / defensive pModel filtering)
 + 22 Attestcoin Protocol cases (hash/name/proof parsing, pipeline failure paths,
 precompile caching) + 10 ASC reader cases (all offline, injected transports)
 + 20 KeeperHub execution-layer cases (fully offline fake transport: config, sizing,
@@ -292,6 +297,10 @@ server-side idempotency key prevents double-spend on retry.
   settles or re-marks positions (that happens on `/api/paper` reads), so an
   open position near expiry may appear `open` in the CSV until the next
   account read settles it.
+- Scorecard per-asset and calibration-bucket stats are computed over the
+  rolling window of the 100 most recently settled markets per fetch; on a
+  sparse testnet some buckets or assets may hold few samples, so bucket-level
+  rates are noisy until the board runs longer.
 - `POST /api/keeperhub` is unauthenticated (testnet demo only): the amount
   is capped by `KEEPERHUB_MAX_STAKE_USD`, re-executing an executed position
   is rejected with 409, and destination addresses are validated — but do

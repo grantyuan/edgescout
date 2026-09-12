@@ -1,14 +1,22 @@
 // ---------------------------------------------------------------------------
 // EdgeScout — model scorecard tests (node:test, no framework, no network).
-// The pure core (summarizeEvaluated / resolveStrikeScale / predictsYes) is
-// unit-tested here; buildScorecard's indexer/candle I/O is covered by the
-// /api/scorecard integration probe (live testnet), never by tests.
+// The pure core (summarizeEvaluated / resolveStrikeScale / predictsYes /
+// summarizeByAsset / summarizeCalibration) is unit-tested here;
+// buildScorecard's indexer/candle I/O is covered by the /api/scorecard
+// integration probe (live testnet), never by tests.
 // Run: npm test
 // ---------------------------------------------------------------------------
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { summarizeEvaluated, resolveStrikeScale, predictsYes } from "./scorecard.ts";
+import {
+  summarizeEvaluated,
+  resolveStrikeScale,
+  predictsYes,
+  summarizeByAsset,
+  summarizeCalibration,
+  SCORECARD_ASSETS,
+} from "./scorecard.ts";
 
 // --- summarizeEvaluated ------------------------------------------------------
 
@@ -105,4 +113,128 @@ test("resolveStrikeScale: no sane scale → raw/100 (×100 convention)", () => {
 test("resolveStrikeScale: degenerate spot (0 / NaN) → raw/100", () => {
   assert.equal(resolveStrikeScale(8034190, 0), 80341.9);
   assert.equal(resolveStrikeScale(8034190, Number.NaN), 80341.9);
+});
+
+// --- summarizeByAsset ---------------------------------------------------------
+
+test("summarizeByAsset: empty rows → both assets 0/nulls, fixed order BTC then ETH", () => {
+  assert.deepEqual(SCORECARD_ASSETS, ["BTC", "ETH"]);
+  const out = summarizeByAsset([]);
+  assert.deepEqual(out, [
+    { asset: "BTC", evaluated: 0, correct: 0, hitRate: null, brierScore: null, meanPModel: null },
+    { asset: "ETH", evaluated: 0, correct: 0, hitRate: null, brierScore: null, meanPModel: null },
+  ]);
+});
+
+test("summarizeByAsset: splits hit-rate/brier per asset, ignores unknown assets, order fixed", () => {
+  // BTC: (0.9,Y) correct; (0.6,N) wrong (calls YES, settles NO);
+  // (0.4,Y) wrong (calls NO, settles YES) → 1/3, brier (0.01+0.36+0.36)/3
+  // ETH: (0.3,Y) wrong → 0/1, brier (0.7)^2 = 0.49
+  // SOL row must be ignored entirely.
+  const out = summarizeByAsset([
+    { asset: "ETH", pModel: 0.3, outcomeYes: true },
+    { asset: "BTC", pModel: 0.9, outcomeYes: true },
+    { asset: "BTC", pModel: 0.6, outcomeYes: false },
+    { asset: "SOL", pModel: 0.5, outcomeYes: true },
+    { asset: "BTC", pModel: 0.4, outcomeYes: true },
+  ]);
+  assert.deepEqual(out.map((a) => a.asset), ["BTC", "ETH"]);
+  const btc = out[0];
+  assert.equal(btc.evaluated, 3);
+  assert.equal(btc.correct, 1);
+  assert.ok(Math.abs(btc.hitRate! - 1 / 3) < 1e-9, `hitRate ${btc.hitRate}`);
+  assert.ok(Math.abs(btc.brierScore! - 0.73 / 3) < 1e-9, `brier ${btc.brierScore}`);
+  assert.ok(Math.abs(btc.meanPModel! - 1.9 / 3) < 1e-9, `mean ${btc.meanPModel}`);
+  const eth = out[1];
+  assert.equal(eth.evaluated, 1);
+  assert.equal(eth.correct, 0);
+  assert.ok(Math.abs(eth.hitRate! - 0) < 1e-9);
+  assert.ok(Math.abs(eth.brierScore! - 0.49) < 1e-9, `brier ${eth.brierScore}`);
+  assert.ok(Math.abs(eth.meanPModel! - 0.3) < 1e-9);
+});
+
+test("summarizeByAsset: custom asset list order is honored", () => {
+  const out = summarizeByAsset([{ asset: "ETH", pModel: 0.8, outcomeYes: true }], ["ETH", "BTC"]);
+  assert.deepEqual(out.map((a) => a.asset), ["ETH", "BTC"]);
+  assert.equal(out[0].evaluated, 1);
+  assert.ok(Math.abs(out[0].hitRate! - 1) < 1e-9);
+  assert.equal(out[1].evaluated, 0);
+  assert.equal(out[1].hitRate, null);
+});
+
+// --- summarizeCalibration -----------------------------------------------------
+
+test("summarizeCalibration: empty rows → 5 empty buckets with nulls", () => {
+  const out = summarizeCalibration([]);
+  assert.equal(out.length, 5);
+  assert.deepEqual(
+    out.map((b) => [b.from, b.to]),
+    [
+      [0, 0.2],
+      [0.2, 0.4],
+      [0.4, 0.6],
+      [0.6, 0.8],
+      [0.8, 1],
+    ],
+  );
+  assert.deepEqual(
+    out.map((b) => b.bucket),
+    ["0.00-0.20", "0.20-0.40", "0.40-0.60", "0.60-0.80", "0.80-1.00"],
+  );
+  for (const b of out) {
+    assert.equal(b.count, 0);
+    assert.equal(b.meanPModel, null);
+    assert.equal(b.empiricalYesRate, null);
+  }
+});
+
+test("summarizeCalibration: boundaries — 'from' inclusive, last bucket includes 1.0", () => {
+  const out = summarizeCalibration([
+    { pModel: 0.199999, outcomeYes: false }, // bucket 0
+    { pModel: 0.2, outcomeYes: true }, // bucket 1 (from-inclusive)
+    { pModel: 0.4, outcomeYes: false }, // bucket 2
+    { pModel: 0.8, outcomeYes: false }, // bucket 4
+    { pModel: 1.0, outcomeYes: true }, // bucket 4 (last inclusive)
+  ]);
+  assert.deepEqual(out.map((b) => b.count), [1, 1, 1, 0, 2]);
+});
+
+test("summarizeCalibration: mean pModel + empirical YES rate per bucket", () => {
+  const out = summarizeCalibration([
+    { pModel: 0.1, outcomeYes: false },
+    { pModel: 0.3, outcomeYes: true },
+    { pModel: 0.5, outcomeYes: true },
+    { pModel: 0.9, outcomeYes: false },
+  ]);
+  assert.deepEqual(out.map((b) => b.count), [1, 1, 1, 0, 1]);
+  assert.ok(Math.abs(out[0].meanPModel! - 0.1) < 1e-9);
+  assert.equal(out[0].empiricalYesRate, 0);
+  assert.ok(Math.abs(out[1].meanPModel! - 0.3) < 1e-9);
+  assert.equal(out[1].empiricalYesRate, 1);
+  assert.equal(out[2].empiricalYesRate, 1);
+  assert.equal(out[3].count, 0);
+  assert.equal(out[4].empiricalYesRate, 0);
+});
+
+test("summarizeCalibration: defensive — non-finite/out-of-range pModel dropped", () => {
+  const out = summarizeCalibration([
+    { pModel: Number.NaN, outcomeYes: true },
+    { pModel: -0.1, outcomeYes: true },
+    { pModel: 1.5, outcomeYes: false },
+    { pModel: 0.5, outcomeYes: true },
+  ]);
+  assert.equal(out.reduce((n, b) => n + b.count, 0), 1);
+  assert.equal(out[2].count, 1);
+  assert.ok(Math.abs(out[2].meanPModel! - 0.5) < 1e-9);
+  assert.equal(out[2].empiricalYesRate, 1);
+});
+
+test("summarizeCalibration: all rows in one middle bucket", () => {
+  const out = summarizeCalibration([
+    { pModel: 0.65, outcomeYes: true },
+    { pModel: 0.7, outcomeYes: false },
+  ]);
+  assert.deepEqual(out.map((b) => b.count), [0, 0, 0, 2, 0]);
+  assert.ok(Math.abs(out[3].meanPModel! - 0.675) < 1e-9);
+  assert.ok(Math.abs(out[3].empiricalYesRate! - 0.5) < 1e-9);
 });

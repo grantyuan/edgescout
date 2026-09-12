@@ -111,6 +111,22 @@ interface ScorecardSummary {
   meanPModel: number | null;
   periodStartSec: number | null;
   periodEndSec: number | null;
+  perAsset: {
+    asset: string;
+    evaluated: number;
+    correct: number;
+    hitRate: number | null;
+    brierScore: number | null;
+    meanPModel: number | null;
+  }[];
+  calibration: {
+    bucket: string;
+    from: number;
+    to: number;
+    count: number;
+    meanPModel: number | null;
+    empiricalYesRate: number | null;
+  }[];
   markets: {
     symbol: string;
     asset: string;
@@ -591,10 +607,76 @@ export default function Home() {
                 ) : (
                   <p className="text-zinc-600 text-xs">no settled markets yet</p>
                 )}
+                {Array.isArray(scorecard.perAsset) && Array.isArray(scorecard.calibration) ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                    <div>
+                      <h3 className="text-zinc-500 text-[10px] uppercase tracking-widest mb-1">
+                        Per-asset (hit-rate / Brier)
+                      </h3>
+                      <table className="w-full text-[11px]">
+                        <thead className="text-zinc-500">
+                          <tr className="text-left">
+                            <th className="py-1 pr-3">Asset</th>
+                            <th className="py-1 pr-3">n</th>
+                            <th className="py-1 pr-3">Hit-rate</th>
+                            <th className="py-1">Brier</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scorecard.perAsset.map((a) => (
+                            <tr key={a.asset} className="border-t border-zinc-800/60">
+                              <td className="py-1 pr-3 text-zinc-100">{a.asset}</td>
+                              <td className="py-1 pr-3 text-zinc-400">{a.evaluated}</td>
+                              <td className="py-1 pr-3 text-sky-300">
+                                {fmtPct(a.hitRate)}
+                              </td>
+                              <td className="py-1 text-zinc-100">
+                                {a.brierScore == null ? "—" : a.brierScore.toFixed(3)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div>
+                      <h3 className="text-zinc-500 text-[10px] uppercase tracking-widest mb-1">
+                        Calibration (mean P(YES) vs empirical rate)
+                      </h3>
+                      <table className="w-full text-[11px]">
+                        <thead className="text-zinc-500">
+                          <tr className="text-left">
+                            <th className="py-1 pr-3">P(YES) bucket</th>
+                            <th className="py-1 pr-3">n</th>
+                            <th className="py-1 pr-3">mean P</th>
+                            <th className="py-1">emp. rate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scorecard.calibration.map((b) => (
+                            <tr key={b.bucket} className="border-t border-zinc-800/60">
+                              <td className="py-1 pr-3 text-zinc-300">{b.bucket}</td>
+                              <td className="py-1 pr-3 text-zinc-400">{b.count}</td>
+                              <td className="py-1 pr-3 text-sky-300">
+                                {b.meanPModel == null ? "—" : b.meanPModel.toFixed(3)}
+                              </td>
+                              <td className="py-1 text-zinc-100">
+                                {b.empiricalYesRate == null
+                                  ? "—"
+                                  : `${(b.empiricalYesRate * 100).toFixed(1)}%`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
                 <p className="text-zinc-600 text-[10px] mt-2">
                   The deterministic model is re-run 1 minute before expiry on the 100 most
                   recently settled markets (measured volatility) and compared with the real
                   on-chain outcomes — hit-rate = directional accuracy, Brier = calibration.
+                  Per-asset split (BTC vs ETH) and five fixed pModel calibration buckets
+                  below are computed by the same unit-tested deterministic core.
                 </p>
               </>
             )}

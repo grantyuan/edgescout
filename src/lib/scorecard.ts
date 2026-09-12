@@ -34,6 +34,12 @@
 //  4. Aggregate via summarizeEvaluated (the pure core, unit-tested):
 //     hitRate = correct / evaluated; brierScore = mean((pModel - outcome)^2);
 //     meanPModel. Full precision — the UI rounds for display.
+//  4b. Per-asset split (summarizeByAsset): the same three statistics over the
+//     BTC and ETH sub-populations, fixed order [BTC, ETH], nulls when an
+//     asset has no evaluated markets. Calibration (summarizeCalibration):
+//     five fixed buckets over pModel — [0,0.2), [0.2,0.4), [0.4,0.6),
+//     [0.6,0.8), [0.8,1.0] (last inclusive) — each reporting count, mean
+//     pModel and the empirical YES rate (calibration vs the model).
 //  5. periodStartSec / periodEndSec = min/max expiry over evaluated markets.
 //  6. markets = evaluated rows, most recent first, capped at 20 for the UI.
 // ---------------------------------------------------------------------------
@@ -84,6 +90,10 @@ export interface ScorecardSummary {
   periodStartSec: number | null;
   /** Latest evaluated market's expiry (unix seconds); null when none. */
   periodEndSec: number | null;
+  /** Per-asset hit-rate / Brier split, fixed order [BTC, ETH]. */
+  perAsset: AssetSummary[];
+  /** Five fixed calibration buckets over pModel (always 5 entries). */
+  calibration: CalibrationBucket[];
   /** Evaluated rows, most recent first, capped at 20 for the UI. */
   markets: ScorecardMarket[];
 }
@@ -145,6 +155,97 @@ export function summarizeEvaluated(rows: Array<{
     brierScore: brierSum / evaluated,
     meanPModel: pSum / evaluated,
   };
+}
+
+/** The two assets the deterministic model evaluates (matches the indexer filter). */
+export const SCORECARD_ASSETS = ["BTC", "ETH"] as const;
+
+/** Per-asset split of the aggregate hit-rate / Brier (one entry per requested asset). */
+export interface AssetSummary {
+  /** Asset name as requested (e.g. "BTC" | "ETH"). */
+  asset: string;
+  /** Evaluated markets for this asset. */
+  evaluated: number;
+  /** Predictions that matched the outcome. */
+  correct: number;
+  /** correct / evaluated; null when evaluated === 0. */
+  hitRate: number | null;
+  /** Mean Brier for this asset; null when evaluated === 0. */
+  brierScore: number | null;
+  /** Mean pModel for this asset; null when evaluated === 0. */
+  meanPModel: number | null;
+}
+
+/**
+ * Pure core (unit-tested): per-asset split of hit-rate / Brier. Deterministic
+ * over the requested `assets` list (fixed output order = input list order);
+ * rows whose asset is not in the list are ignored; assets with no rows
+ * report evaluated 0 and nulls.
+ */
+export function summarizeByAsset(
+  rows: Array<{ asset: string; pModel: number; outcomeYes: boolean }>,
+  assets: readonly string[] = SCORECARD_ASSETS,
+): AssetSummary[] {
+  return assets.map((asset) => {
+    const s = summarizeEvaluated(
+      rows
+        .filter((r) => r.asset === asset)
+        .map((r) => ({ pModel: r.pModel, outcomeYes: r.outcomeYes })),
+    );
+    return { asset, ...s };
+  });
+}
+
+/** One fixed-width calibration bucket over pModel. */
+export interface CalibrationBucket {
+  /** Label, e.g. "0.00-0.20" (last bucket "0.80-1.00" is inclusive). */
+  bucket: string;
+  /** Lower bound (inclusive). */
+  from: number;
+  /** Upper bound; exclusive, except for the last bucket (inclusive). */
+  to: number;
+  /** Evaluated rows falling in this bucket. */
+  count: number;
+  /** Mean pModel within the bucket; null when count === 0. */
+  meanPModel: number | null;
+  /** Fraction of YES outcomes within the bucket; null when count === 0. */
+  empiricalYesRate: number | null;
+}
+
+/**
+ * Pure core (unit-tested): five fixed calibration buckets over pModel —
+ * [0,0.2), [0.2,0.4), [0.4,0.6), [0.6,0.8), [0.8,1.0] (the last bucket is
+ * inclusive on both ends). Rows whose pModel is not finite or outside [0,1]
+ * are dropped defensively. The output always contains all five buckets
+ * (empty ones report count 0 and nulls), so the response shape is stable.
+ */
+export function summarizeCalibration(
+  rows: Array<{ pModel: number; outcomeYes: boolean }>,
+): CalibrationBucket[] {
+  const edges = [0, 0.2, 0.4, 0.6, 0.8, 1];
+  const clean = rows.filter(
+    (r) => Number.isFinite(r.pModel) && r.pModel >= 0 && r.pModel <= 1,
+  );
+  return edges.slice(0, -1).map((from, i) => {
+    const to = edges[i + 1];
+    const last = i === edges.length - 2;
+    const sub = clean.filter((r) => r.pModel >= from && (last ? r.pModel <= to : r.pModel < to));
+    const count = sub.length;
+    let pSum = 0;
+    let yes = 0;
+    for (const r of sub) {
+      pSum += r.pModel;
+      if (r.outcomeYes) yes += 1;
+    }
+    return {
+      bucket: `${from.toFixed(2)}-${to.toFixed(2)}`,
+      from,
+      to,
+      count,
+      meanPModel: count === 0 ? null : pSum / count,
+      empiricalYesRate: count === 0 ? null : yes / count,
+    };
+  });
 }
 
 /** Raw indexer row shape (Hasura-style GraphQL response). */
@@ -312,6 +413,12 @@ export async function buildScorecard(limit = 100): Promise<ScorecardSummary> {
   return {
     ...summary,
     skipped,
+    perAsset: summarizeByAsset(
+      evaluated.map((m) => ({ asset: m.asset, pModel: m.pModel, outcomeYes: m.outcomeYes })),
+    ),
+    calibration: summarizeCalibration(
+      evaluated.map((m) => ({ pModel: m.pModel, outcomeYes: m.outcomeYes })),
+    ),
     periodStartSec: evaluated.length > 0 ? Math.min(...expiries) : null,
     periodEndSec: evaluated.length > 0 ? Math.max(...expiries) : null,
     markets: evaluated.slice(0, 20),
